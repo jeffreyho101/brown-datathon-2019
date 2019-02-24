@@ -1,0 +1,155 @@
+---
+title: "BDS - CDC"
+author: "Jeffrey Ho"
+date: "2/23/2019"
+output: html_document
+---
+
+## Initial Data Processing
+```{r warning=FALSE, message=FALSE}
+library(stringr)
+library(plyr)
+library(dplyr)
+library(readr)
+cdc = readLines("BRFSS2017.txt")
+
+#age: turn categorical variable into actual age
+age = (as.numeric(unlist(lapply(cdc,function(x) {substr(x,2033,2033)}))))*5+15
+# sex: 0=male, 1=female
+sex = as.numeric(unlist(lapply(cdc,function(x) {substr(x,125,125)}))) - 1
+sex = as.numeric(gsub(8, NA, sex))
+
+# cig100: 1:yes,0:no, other:na/didn't responsd/don't know
+cig100 = as.numeric(unlist(lapply(cdc,function(x) {substr(x,198,198)}))) 
+cig100 = as.numeric(gsub(2, 0, cig100))
+cig100 = as.numeric(gsub(7, 0, cig100))
+cig100 = as.numeric(gsub(9, 0, cig100))
+
+freqsmoke = as.numeric(unlist(lapply(cdc,function(x) {substr(x,199,199)})))
+stop12 = as.numeric(unlist(lapply(cdc,function(x) {substr(x,200,200)})))
+
+lastsmoked = as.numeric(unlist(lapply(cdc,function(x) {substr(x,201,202)})))
+everecig = as.numeric(unlist(lapply(cdc,function(x) {substr(x,204,204)})))
+agestart = as.numeric(unlist(lapply(cdc,function(x) {substr(x,447,449)})))
+ageend = as.numeric(unlist(lapply(cdc,function(x) {substr(x,450,452)})))
+
+# cigperday: 1:yes,0:no, other:na/didn't responsd/don't know
+cigperday = as.numeric(unlist(lapply(cdc,function(x) {substr(x,453,455)})))
+cigperday = as.numeric(gsub(777, 0, cigperday))
+cigperday = as.numeric(gsub(999, 0, cigperday))
+cigperday[is.na(cigperday)] = 0
+
+# curecig: 1:yes,0:no, other:na/didn't responsd/don't know
+curecig = as.numeric(unlist(lapply(cdc,function(x) {substr(x,2057,2057)})))
+curecig = as.numeric(gsub(2, 0, curecig))
+curecig = as.numeric(gsub(9, 0, curecig))
+
+# cancertype = 1 if cancer is commonly associated with smoking; 0 otherwise
+cancertype = as.numeric(unlist(lapply(cdc,function(x) {substr(x,411,412)})))
+cancertype = as.numeric(gsub(1, 0, cancertype))
+cancertype[cancertype %in% c(2,6,9,10,11,13,14,15,24,25,26,30)] = 1
+cancertype[(cancertype != 1)] = 0
+
+hbpcv = as.numeric(unlist(lapply(cdc,function(x) {substr(x,1950,1950)})))
+toldhbp = as.numeric(unlist(lapply(cdc,function(x) {substr(x,1950,1950)})))
+# ha: 1:yes,0:no, other:na/didn't responsd/don't know
+ha = as.numeric(unlist(lapply(cdc,function(x) {substr(x,106,106)})))
+ha = as.numeric(gsub(2, 0, ha))
+ha = as.numeric(gsub(7, NA, ha))
+ha = as.numeric(gsub(9, NA, ha))
+
+# angina: 1=yes,0=no
+angchd = as.numeric(unlist(lapply(cdc,function(x) {substr(x,107,107)})))
+angchd = as.numeric(gsub(2, 0, angchd))
+angchd = as.numeric(gsub(7, NA, angchd))
+angchd = as.numeric(gsub(9, NA, angchd))
+
+#stroke: 1=yes,0=no
+stroke = as.numeric(unlist(lapply(cdc,function(x) {substr(x,108,108)})))
+stroke = as.numeric(gsub(2, 0, stroke))
+stroke = as.numeric(gsub(7, NA, stroke))
+stroke = as.numeric(gsub(9, NA, stroke))
+
+yearssmoked = ageend-agestart
+
+data = data.frame(age,sex,cig100,freqsmoke,stop12,lastsmoked,everecig,agestart,ageend,cigperday,curecig,cancertype,hbpcv,toldhbp,ha,angchd,stroke,yearssmoked)
+write.csv(data,"cdc2017.csv",row.names=FALSE)
+write.table(data,"cdc2017.txt",row.names=FALSE)
+
+```
+
+##Variable Selection; Further Processing
+```{r warning=FALSE, message=FALSE}
+# data = our data table
+data = subset(data,yearssmoked >= 0)
+data = subset(data,yearssmoked <= 100)
+
+cols = c("age","sex","cig100","cigperday","curecig","cancertype","ha","angchd","stroke")
+refined = subset(data,,cols)
+refined=data[,cols]
+
+# fill in na values with reasonable predictions based on dataset mean
+for(i in 1:nrow(refined)){
+  if(is.na(refined$cancertype[i])){
+    refined$cancertype[i] = ifelse(runif(n, min=0, max=1) < .2,1,0)
+  }
+}
+refined = na.omit(refined)
+```
+
+
+## Splitting into Train/Test sets
+```{r warning=FALSE}
+set.seed(10101)
+# actually perform logistic regression
+library(ggplot2)
+#indicate categorical variables with factor()
+refined$sex <- factor(refined$sex)
+refined$curecig <- factor(refined$curecig)
+
+train.indices = sample(1:nrow(refined), floor(nrow(refined)*.8))
+train = refined[train.indices,]
+test = refined[-train.indices,]
+```
+
+
+## Logsitic Regression - Testing Association of Smoking + Sex + Age
+
+```{r warning=FALSE,message=FALSE}
+ha.logit <- glm(ha ~ age+sex+cig100+cigperday+curecig, data=train, family = "binomial")
+# summary of heart attack logistic regression model
+summary(ha.logit)
+par(mfrow=c(2,2))
+anova(ha.logit,test="Chisq")
+ha.test = predict(ha.logit,newdata=test, type="response")
+misclass.err.ha <- mean(abs(ha.test - test$cancertype))
+1-misclass.err.ha
+
+```
+
+
+```{r warning=FALSE,message=FALSE}
+
+angchd.logit <- glm(angchd ~ age+sex+cig100+cigperday+curecig, data=train, family = "binomial")
+# summary of angina+coronary heart disease logistic regression model
+summary(angchd.logit)
+par(mfrow=c(2,2))
+anova(angchd.logit,test="Chisq")
+angchd.test = predict(angchd.logit,newdata=test, type="response")
+misclass.err.angchd <- mean(abs(angchd.test - test$cancertype))
+1-misclass.err.angchd
+
+```
+
+```{r warning=FALSE,message=FALSE}
+
+stroke.logit <- glm(stroke ~ age+sex+cig100+cigperday+curecig, data=train, family = "binomial")
+# summary of stroke logistic regression model
+summary(stroke.logit)
+anova(stroke.logit,test="Chisq")
+stroke.test = predict(stroke.logit,newdata=test, type="response")
+misclass.err.st <- mean(abs(stroke.test - test$cancertype))
+1-misclass.err.st
+```
+
+
